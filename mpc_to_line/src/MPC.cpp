@@ -11,8 +11,8 @@ namespace plt = matplotlibcpp;
 using CppAD::AD;
 
 // TODO: Set N and dt
-size_t N = ? ;
-double dt = ? ;
+size_t N = 20;
+double dt = .1;
 
 /*
 This value assumes the model presented in the classroom is used.
@@ -58,11 +58,33 @@ class FG_eval {
     // The cost is stored is the first element of `fg`.
     // Any additions to the cost should be added to `fg[0]`.
 
-    fg[0] = 0;
+		AD<double> cost = 0;
 
     // Reference State Cost
     // TODO: Define the cost related the reference state and
     // any anything you think may be beneficial.
+
+    // The part of the cost based on the reference state.
+		// consider cte and epsi, plus v/ref_v
+		for (int t = 0; t < N; ++t) {
+			cost += CppAD::pow(vars[cte_start + t], 2);
+			cost += CppAD::pow(vars[epsi_start + t], 2);
+			cost += CppAD::pow(vars[v_start + t] - ref_v, 2);
+		}
+
+    // Minimize the use of actuators (prefer to not change)
+		for (int t = 0; t < N - 1; ++t) {
+			cost += CppAD::pow(vars[delta_start + t], 2);
+			cost += CppAD::pow(vars[a_start + t], 2);
+		}
+
+    // Minimize the value gap between sequential actuations (don't change a lot)
+		for (int t = 0; t < N - 2; ++t) {
+			cost += CppAD::pow(vars[delta_start + t] - vars[delta_start + t + 1], 2);
+			cost += CppAD::pow(vars[a_start + t] - vars[a_start + t + 1], 2);
+		}
+
+		fg[0] = cost;
 
     // Setup Constraints
     // NOTE: In this section you'll setup the model constraints.
@@ -79,20 +101,48 @@ class FG_eval {
 
     // The rest of the constraints
     for (int t = 1; t < N; t++) {
+      // The state at time t.
       AD<double> x0 = vars[x_start + t - 1];
+      AD<double> y0 = vars[y_start + t - 1];
       AD<double> psi0 = vars[psi_start + t - 1];
       AD<double> v0 = vars[v_start + t - 1];
+      AD<double> cte0 = vars[cte_start + t - 1];
+      AD<double> epsi0 = vars[epsi_start + t - 1];
+			AD<double> delta0 = vars[delta_start + t - 1];
+      AD<double> a0 = vars[a_start + t - 1];
 
+      AD<double> f0 = coeffs[0] + coeffs[1] * x0; // Line value at x0
+      AD<double> psides0 = CppAD::atan(coeffs[1]); // Desired heading at x0
 
-      // Here's `x` to get you started.
+			// The state at time t+1 .
+      AD<double> x1 = vars[x_start + t];
+      AD<double> y1 = vars[y_start + t];
+      AD<double> psi1 = vars[psi_start + t];
+      AD<double> v1 = vars[v_start + t];
+      AD<double> cte1 = vars[cte_start + t];
+      AD<double> epsi1 = vars[epsi_start + t];
+
       // The idea here is to constraint this value to be 0.
 
-      // NOTE: The use of `AD<double>` and use of `CppAD`!
+      // Note the use of `AD<double>` and use of `CppAD`!
       // This is so CppAD can compute derivatives and pass these to the solver.
 
-      // TODO: Setup the rest of the model constraints
-      AD<double> x1 = vars[x_start + t];
+			// Recall the equations for the model:
+      // x_[t+1] = x[t] + v[t] * cos(psi[t]) * dt
+      // y_[t+1] = y[t] + v[t] * sin(psi[t]) * dt
+      // psi_[t+1] = psi[t] + v[t] / Lf * delta[t] * dt
+      // v_[t+1] = v[t] + a[t] * dt
+      // cte[t+1] = f(x[t]) - y[t] + v[t] * sin(epsi[t]) * dt
+			//   # line_val - where_we_are + (additional error from angle error)
+      // epsi[t+1] = psi[t] - psides[t] + v[t] * delta[t] / Lf * dt
+			//   # heading - desired_heading + (heading_change)
+
       fg[1 + x_start + t] = x1 - (x0 + v0 * CppAD::cos(psi0) * dt);
+      fg[1 + y_start + t] = y1 - (y0 + v0 * CppAD::sin(psi0) * dt);
+      fg[1 + psi_start + t] = psi1 - (psi0 + (v0 / Lf) * delta0 * dt);
+      fg[1 + v_start + t] = v1 - (v0 + a0 * dt);
+      fg[1 + cte_start + t] = cte1 - (f0 - y0 + v0 * CppAD::sin(epsi0) * dt);
+      fg[1 + epsi_start + t] = epsi1 - (psi0 - psides0 + (v0 / Lf) * delta0 * dt);
     }
   }
 };
@@ -102,6 +152,9 @@ class FG_eval {
 MPC::MPC() {}
 MPC::~MPC() {}
 
+// Solve the model given an initial state.
+// Return the next state and actuations as a vector:
+// x, y, psi, v, cte, epsi, delta, a
 vector<double> MPC::Solve(Eigen::VectorXd x0, Eigen::VectorXd coeffs) {
   size_t i;
   typedef CPPAD_TESTVECTOR(double) Dvector;
@@ -253,15 +306,16 @@ int main() {
   ptsx << -100, 100;
   ptsy << -1, -1;
 
-  auto coeffs = ?; // TODO: fit a polynomial to the above x and y coordinates
+	// Fit a polynomial to the above x and y coordinates
+  auto coeffs = polyfit(ptsx, ptsy, 1); // Line
 
   // NOTE: free feel to play around with these
   double x = -1;
   double y = 10;
   double psi = 0;
   double v = 10;
-  double cte = ?; // TODO: calculate the cross track error
-  double epsi = ?; // TODO: calculate the orientation error
+  double cte = polyeval(coeffs, x) - y;
+  double epsi = psi - atan(coeffs[1]);
 
   Eigen::VectorXd state(6);
   state << x, y, psi, v, cte, epsi;

@@ -12,8 +12,9 @@ class MPC {
 
   virtual ~MPC();
 
-  // Solve the model given an initial state.
-  // Return the next state and actuations as a vector.
+	// Solve the model given an initial state.
+	// Return the next state and actuations as a vector:
+	// x, y, psi, v, cte, epsi, delta, a
   vector<double> Solve(Eigen::VectorXd x0, Eigen::VectorXd coeffs);
 };
 
